@@ -17,4 +17,6 @@ __all__ = [
     "readonly",
     "portfolio",
     "llm_client",
+    "buy_opportunity",
 ]
+
