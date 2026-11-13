@@ -1,0 +1,9 @@
+﻿{
+    "model":  "claude-opus-4.8",
+    "messages":  [
+                     {
+                         "content":  "Hello! Reply with exactly: Connection successful.",
+                         "role":  "user"
+                     }
+                 ]
+}
