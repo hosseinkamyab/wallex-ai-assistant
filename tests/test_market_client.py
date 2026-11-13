@@ -53,10 +53,16 @@ class TestHelpers(unittest.TestCase):
         with self.assertRaises(WallexResponseError):
             _to_decimal("abc", "price", "t")
 
+    def test_to_decimal_rejects_non_finite_values(self) -> None:
+        for value in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(value=value), self.assertRaises(WallexResponseError):
+                _to_decimal(value, "price", "t")
+
     def test_optional_decimal_tolerates_junk(self) -> None:
         self.assertIsNone(_optional_decimal(""))
         self.assertIsNone(_optional_decimal("abc"))
         self.assertIsNone(_optional_decimal(None))
+        self.assertIsNone(_optional_decimal("NaN"))
         self.assertEqual(_optional_decimal("2.5"), Decimal("2.5"))
 
 
@@ -211,6 +217,18 @@ class TestCandles(unittest.TestCase):
             MarketClient._candles_from_udf({"s": "no_data"}, "BTCTMN"), []
         )
 
+    def test_missing_or_empty_status_is_tolerated(self) -> None:
+        base_payload = {"t": [1], "o": [1], "h": [1], "l": [1], "c": [1]}
+        for status in (None, ""):
+            with self.subTest(status=status):
+                payload = {**base_payload, "s": status}
+                self.assertEqual(
+                    len(MarketClient._candles_from_udf(payload, "X")), 1
+                )
+        self.assertEqual(
+            len(MarketClient._candles_from_udf(base_payload, "X")), 1
+        )
+
     def test_unexpected_status_raises(self) -> None:
         with self.assertRaises(WallexResponseError):
             MarketClient._candles_from_udf({"s": "error"}, "BTCTMN")
@@ -231,6 +249,14 @@ class TestCandles(unittest.TestCase):
         }
         candles = MarketClient._candles_from_udf(payload, "X")
         self.assertIsNone(candles[0].volume)
+
+    def test_malformed_volume_array_raises(self) -> None:
+        payload = {
+            "s": "ok", "t": [1], "o": [1], "h": [1], "l": [1], "c": [1],
+            "v": "not-an-array",
+        }
+        with self.assertRaises(WallexResponseError):
+            MarketClient._candles_from_udf(payload, "X")
 
 
 class TestNoCredentialUse(unittest.TestCase):
