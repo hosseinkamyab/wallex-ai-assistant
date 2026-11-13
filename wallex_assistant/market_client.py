@@ -148,9 +148,12 @@ class MarketClient:
             # Some API payloads wrap the market mapping directly in result.
             items = container if container is not payload else None
         if isinstance(items, dict):
+            # Malformed entries cannot provide market statistics; discard them
+            # rather than coercing scalars into empty-looking market records.
             markets = {
-                str(symbol).upper(): value if isinstance(value, dict) else {"symbol": symbol, "value": value}
+                str(symbol).upper(): value
                 for symbol, value in items.items()
+                if isinstance(value, dict)
             }
         elif isinstance(items, list):
             markets = {}
@@ -172,8 +175,12 @@ class MarketClient:
         return sorted(self.get_markets())
 
     def get_market_stats(self) -> list[MarketStat]:
-        """Parse public market snapshots."""
-        return [MarketStat.from_api(symbol, raw) for symbol, raw in self.get_markets().items()]
+        """Parse public market snapshots, ignoring malformed entries."""
+        return [
+            MarketStat.from_api(symbol, raw)
+            for symbol, raw in self.get_markets().items()
+            if isinstance(raw, dict)
+        ]
 
     def get_ticker(self, symbol: str) -> MarketStat:
         wanted = symbol.upper()
