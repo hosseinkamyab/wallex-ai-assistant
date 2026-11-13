@@ -30,14 +30,21 @@ def _to_decimal(value: Any, field: str, context: str) -> Decimal:
             endpoint="market-data",
         )
     if isinstance(value, Decimal):
-        return value
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        result = value
+    else:
+        try:
+            result = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise WallexResponseError(
+                f"Field {field!r} for {context!r} is not numeric: {value!r}",
+                endpoint="market-data",
+            ) from exc
+    if not result.is_finite():
         raise WallexResponseError(
-            f"Field {field!r} for {context!r} is not numeric: {value!r}",
+            f"Field {field!r} for {context!r} is not finite: {value!r}",
             endpoint="market-data",
-        ) from exc
+        )
+    return result
 
 
 def _optional_decimal(value: Any) -> Decimal | None:
@@ -45,9 +52,10 @@ def _optional_decimal(value: Any) -> Decimal | None:
     if value in (None, "", "-"):
         return None
     try:
-        return Decimal(str(value))
+        result = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return None
+    return result if result.is_finite() else None
 
 
 @dataclass
@@ -63,7 +71,12 @@ class Candle:
 
     @classmethod
     def from_udf_row(cls, ts: Any, o: Any, h: Any, l: Any, c: Any, v: Any) -> "Candle":
-        dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        try:
+            dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        except (ValueError, TypeError, OSError, OverflowError) as exc:
+            raise WallexResponseError(
+                f"Invalid candle timestamp: {ts!r}", endpoint="/v1/udf/history"
+            ) from exc
         return cls(
             open_time=dt,
             open=_to_decimal(o, "open", "candle"),
@@ -224,10 +237,14 @@ class MarketClient:
     def _candles_from_udf(payload: dict[str, Any], symbol: str) -> list[Candle]:
         if not isinstance(payload, dict):
             raise WallexResponseError(f"Candles payload was not a dict for {symbol!r}", endpoint="/v1/udf/history")
-        if payload.get("s") == "no_data":
+        status = payload.get("s")
+        if status == "no_data":
             return []
-        if payload.get("s") not in {"ok", None, "": "ok"} and payload.get("s") != "ok":
-            raise WallexResponseError(f"Candles API returned status {payload.get('s')!r} for {symbol!r}", endpoint="/v1/udf/history")
+        # TradingView's UDF history endpoint uses "ok" for data and
+        # "no_data" for a valid empty result. Some compatible responses omit
+        # the status (or send an empty value), so accept only those known forms.
+        if status not in ("ok", None, ""):
+            raise WallexResponseError(f"Candles API returned status {status!r} for {symbol!r}", endpoint="/v1/udf/history")
 
         times = payload.get("t")
         opens = payload.get("o")
@@ -237,6 +254,8 @@ class MarketClient:
         vols = payload.get("v", [])
         if not all(isinstance(v, list) for v in (times, opens, highs, lows, closes)):
             raise WallexResponseError(f"Candles payload for {symbol!r} was missing arrays", endpoint="/v1/udf/history")
+        if not isinstance(vols, list):
+            raise WallexResponseError(f"Candles volume data for {symbol!r} was not an array", endpoint="/v1/udf/history")
         length = min(len(times), len(opens), len(highs), len(lows), len(closes))
         candles: list[Candle] = []
         for idx in range(length):
