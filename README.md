@@ -30,22 +30,24 @@ The project already contains a fairly solid foundation for the initial architect
 The repository is not complete yet. The most important blockers are:
 
 1. Portfolio import failure
-   - `wallex_assistant/portfolio.py` imports `get_balances` from `account_client.py`, but that symbol is not defined there.
-   - This blocks imports and prevents the portfolio layer from being reliably used.
+   - `wallex_assistant/portfolio.py` imported `get_balances` from `account_client.py`, but that symbol was not defined there.
+   - This blocked imports and prevented the portfolio layer from being reliably used.
 
 2. LLM integration is not fully wired correctly
-   - `llm_client.py` uses `t(...)` in prompt composition without importing it in a clean, consistent way.
-   - The code still contains some loose data handling and assumptions that need normalization.
+   - `llm_client.py` still needs cleaner provider/model handling and more robust prompt-building.
 
 3. Missing app/UI layer
    - There is no Streamlit app or dashboard entry point yet.
-   - The repository is still mostly library-level code rather than a full user-facing product.
 
 4. Missing portfolio analytics depth
    - The code has pricing and total value logic, but not yet a richer allocation, risk, or insight layer.
 
 5. Cleanup and repo hygiene
-   - The repository contains generated `__pycache__` files and the `requirements.txt` file appears to have encoding issues that should be normalized before relying on it fully.
+   - The repository contains generated `__pycache__` files and the `requirements.txt` file should be normalized before relying on it fully.
+
+## Status after step 1
+
+The portfolio import blocker has been fixed and a focused set of tests was added to exercise the valuation and analysis flow.
 
 ## Recommended roadmap
 
@@ -70,7 +72,7 @@ The repository is not complete yet. The most important blockers are:
 
 ## Next step
 
-The immediate next step is to fix the portfolio import blocker and add a small set of tests around the valuation path so the core logic is stable before more product work is added.
+The immediate next step is to correct the AI analysis path and provider handling, then move to the UI layer and richer portfolio metrics.
 
 This README is intentionally a living document. It should be updated after each milestone to reflect what was implemented, what remains, and the next actionable step.
 
