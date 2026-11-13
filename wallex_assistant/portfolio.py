@@ -7,14 +7,11 @@ and can generate AI-powered insights via an LLM.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from .config import get_settings, Settings
-from .errors import WallexError
-from .i18n import format_money, format_percent, format_quantity, is_rtl, t
-from .llm_client import analyze_portfolio, _deterministic_summary
+from .account_client import AccountClient, Balance
+from .config import Settings, get_settings
 from .market_client import MarketClient, MarketStat
-from .account_client import AccountClient, Balance, get_balances as _get_balances
 
 
 def get_portfolio_balances(
@@ -57,9 +54,10 @@ def value_portfolio(
             (m for m in market_stats if m.symbol.upper() == bal.asset.upper()),
             None,
         )
-        price = stat.last_price if stat else Decimal("0")
+        if stat is None or stat.last_price is None:
+            continue
         holding = bal.available + bal.locked
-        total += holding * price
+        total += holding * stat.last_price
     return total
 
 
@@ -77,19 +75,28 @@ def get_asset_values(
             (m for m in market_stats if m.symbol.upper() == bal.asset.upper()),
             None,
         )
-        price = stat.last_price if stat else Decimal("0")
+        price = stat.last_price if stat else None
         holding = bal.available + bal.locked
-        value = holding * price
+        value = holding * price if price is not None else Decimal("0")
         result.append(
             {
                 "asset": bal.asset,
                 "quantity": str(holding),
-                "price": str(price) if price else "N/A",
+                "price": str(price) if price is not None else "N/A",
                 "value_tmn": str(value),
             }
         )
-    # Sort by value descending
-    result.sort(key=lambda x: float(x["value_tmn"]) if x["value_tmn"] != "N/A" else 0, reverse=True)
+
+    def sort_key(entry: Dict[str, Any]) -> Decimal:
+        value_tmn = entry["value_tmn"]
+        if value_tmn == "N/A":
+            return Decimal("0")
+        try:
+            return Decimal(str(value_tmn))
+        except Exception:
+            return Decimal("0")
+
+    result.sort(key=sort_key, reverse=True)
     return result
 
 
@@ -114,6 +121,9 @@ def generate_analysis(
 
     if not balances:
         from .i18n import t
+
         return t("analysis.empty", language)
+
+    from .llm_client import analyze_portfolio
 
     return analyze_portfolio(balances, market_stats, language=language, model=model)
