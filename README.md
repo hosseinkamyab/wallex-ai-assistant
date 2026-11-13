@@ -1,6 +1,6 @@
 # Wallex AI Assistant
 
-A modular, read-only cryptocurrency market and portfolio assistant for Wallex. The project is designed to fetch public market data, optionally read account balances when a Wallex API key is configured, and provide decision-support analysis through a Streamlit dashboard.
+A modular, read-only cryptocurrency market and portfolio assistant for Wallex. The project is designed to fetch public market data, optionally read account balances when a Wallex API key is configured, and surface evidence-based market intelligence without enabling trading actions.
 
 ## Overview
 
@@ -9,11 +9,71 @@ This repository is intended as a decision-support dashboard for cryptocurrency m
 - public Wallex market discovery and pricing
 - market activity and trend summaries
 - portfolio valuation from account balances when a key is connected
-- in-app API key management without manual PowerShell configuration
 - read-only access safety and guardrails
-- extensible technical-analysis and AI-analysis architecture
+- extensible technical-analysis and recommendation architecture
+- deterministic multi-timeframe crypto analysis grounded in real OHLCV data
 
 The app is deliberately read-only by design. It does not place orders, transfer funds, or withdraw assets.
+
+## Cryptocurrency Analysis and Decision Engine
+
+The repository now includes a deterministic cryptocurrency analysis engine in `wallex_assistant/analysis.py`.
+
+It is designed to:
+
+- fetch real historical OHLCV candles from Wallex via the official TradingView-style UDF endpoint
+- analyze supported markets across multiple timeframes: 15m, 1h, 4h, 1d, and 1w
+- calculate technical indicators including RSI(14), MACD, EMA/SMA, Bollinger Bands, ATR, ADX, and trend strength
+- detect market context such as Bitcoin direction, breadth, volatility, risk conditions, and support/resistance zones
+- compare short-, medium-, and long-term structure to avoid simplistic buy/sell outputs
+- generate transparent signals such as STRONG BUY, BUY, WAIT FOR ENTRY, HOLD, TAKE PROFIT, SELL, STRONG SELL, and AVOID
+- score evidence on a 0-100 scale using configurable weights while avoiding double-counting correlated indicators
+- skip recommendations when data is insufficient and surface warnings for API failures or missing candles
+
+The engine is intentionally separated from any AI generation layer. Indicator math and scoring are deterministic and reproducible; the narrative explanation is generated from structured data, not guessed.
+
+### Signal methodology
+
+The scoring uses configurable weights through `ScoringWeights` and normalizes the active evidence groups for the final score. The weights are designed to combine independent evidence groups such as:
+
+- trend strength
+- momentum
+- volume confirmation
+- volatility
+- multi-timeframe agreement
+- risk/reward context
+- market conditions
+
+Correlated indicators are grouped into a few evidence categories instead of being counted as multiple independent confirmations.
+
+### Data sufficiency requirements
+
+The engine will not produce a signal if insufficient historical data is available. For a symbol to receive a trade recommendation, a minimum number of candles is required on the daily timeframe and at least one additional timeframe. If data is missing or the API fails for some timeframe, the engine returns a warning and avoids inventing values.
+
+### Example usage
+
+```python
+from wallex_assistant.analysis import ScoringWeights, analyze_with_client
+from wallex_assistant.market_client import MarketClient
+
+client = MarketClient.from_settings()
+try:
+    context, results = analyze_with_client(
+        client,
+        ["BTCTMN", "ETHTMN"],
+        bars=300,
+        weights=ScoringWeights(),
+    )
+    for item in results:
+        print(item.symbol, item.signal, item.score)
+        print(item.explanation)
+finally:
+    client.close()
+```
+
+### Documentation
+
+Additional methodology notes are available in `docs/analysis-engine.md`.
 
 ## Official Wallex API endpoints
 
@@ -97,7 +157,7 @@ The project includes a modular technical-analysis architecture for:
 - SMA and EMA
 - Bollinger Bands
 - ATR
-- Stochastic oscillator
+- ADX
 - support and resistance estimation
 - volume and momentum analysis
 - multi-timeframe analysis when historical data is available
@@ -110,7 +170,6 @@ The dashboard supports evidence-based scoring for:
 - momentum
 - volume
 - volatility
-- liquidity conditions
 - multi-timeframe agreement
 - risk and support/resistance context
 
@@ -145,7 +204,8 @@ The project is organized into modular components:
 
 - `wallex_assistant/config.py` for settings and secret handling
 - `wallex_assistant/http.py` for HTTP transport and retries
-- `wallex_assistant/market_client.py` for public market parsing
+- `wallex_assistant/market_client.py` for public market parsing and OHLCV history
+- `wallex_assistant/analysis.py` for deterministic technical analysis and scoring
 - `wallex_assistant/account_client.py` for account balance access
 - `wallex_assistant/portfolio.py` for aggregation and valuation
 - `wallex_assistant/readonly.py` for read-only enforcement
@@ -153,7 +213,7 @@ The project is organized into modular components:
 
 ## Market candle response validation
 
-Historical candles are parsed using the Wallex TradingView UDF response contract. A status of `ok` indicates data, `no_data` is a valid empty result, and unknown statuses are treated as API response errors. Missing or empty status values are tolerated for compatibility, but required OHLC/time arrays must still be present. Invalid or non-finite numeric price values are rejected rather than being allowed to contaminate portfolio calculations.
+Historical candles are parsed using the Wallex TradingView UDF response contract. A status of `ok` indicates data, `no_data` is a valid empty result, and unknown statuses are treated as API response errors rather than fabricated data.
 
 ## Testing
 
@@ -167,6 +227,7 @@ Focused checks can be run like this:
 
 ```powershell
 python -m pytest tests/test_market_client.py
+python -m pytest tests/test_analysis.py
 python -m pytest tests/test_account_client.py
 python -m pytest tests/test_readonly.py
 python -m pytest tests/test_portfolio.py
@@ -183,7 +244,7 @@ python -m compileall -q wallex_assistant streamlit_app.py
 - Public market data works without a key, but account data requires a valid Wallex API key.
 - Some advanced analysis features depend on historical candle availability.
 - API response shapes can vary slightly between endpoints or payload versions; the parser is purposely defensive.
-- AI outputs are assistive and should not be treated as guaranteed predictions.
+- Signals are assistive and should not be treated as guaranteed predictions.
 - The app does not include automated trading.
 
 ## Security note
