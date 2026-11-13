@@ -1,6 +1,6 @@
 # Wallex AI Assistant
 
-A modular, read-only cryptocurrency market and portfolio assistant for Wallex. The project is designed to fetch public market data, optionally validate a Wallex API key from inside the Streamlit app, and present portfolio, market, and analysis information without enabling trading or withdrawals.
+A modular, read-only cryptocurrency market and portfolio assistant for Wallex. The project is designed to fetch public market data, optionally read account balances when a Wallex API key is configured, and provide decision-support analysis through a Streamlit dashboard.
 
 ## Overview
 
@@ -151,6 +151,10 @@ The project is organized into modular components:
 - `wallex_assistant/readonly.py` for read-only enforcement
 - `streamlit_app.py` for the dashboard UI
 
+## Market candle response validation
+
+Historical candles are parsed using the Wallex TradingView UDF response contract. A status of `ok` indicates data, `no_data` is a valid empty result, and unknown statuses are treated as API response errors. Missing or empty status values are tolerated for compatibility, but required OHLC/time arrays must still be present. Invalid or non-finite numeric price values are rejected rather than being allowed to contaminate portfolio calculations.
+
 ## Testing
 
 Run the default test suite with:
@@ -166,6 +170,12 @@ python -m pytest tests/test_market_client.py
 python -m pytest tests/test_account_client.py
 python -m pytest tests/test_readonly.py
 python -m pytest tests/test_portfolio.py
+```
+
+A syntax-only check for the Python package and Streamlit entry point can also be run with:
+
+```powershell
+python -m compileall -q wallex_assistant streamlit_app.py
 ```
 
 ## Known limitations
