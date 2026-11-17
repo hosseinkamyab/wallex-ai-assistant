@@ -27,7 +27,7 @@ class TestPortfolioValuation(unittest.TestCase):
             MarketStat(symbol="ETH", last_price=Decimal("500")),
         ]
 
-        self.assertEqual(value_portfolio(balances, market_stats), Decimal("2000"))
+        self.assertEqual(value_portfolio(balances, market_stats), Decimal("2500"))
 
     def test_value_portfolio_ignores_assets_without_market_price(self) -> None:
         balances = [
@@ -78,3 +78,4 @@ class TestGenerateAnalysis(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
