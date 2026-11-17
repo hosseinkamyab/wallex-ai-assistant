@@ -114,6 +114,19 @@ class TestMarketStatParsing(unittest.TestCase):
         self.assertEqual(data["last_price"], "5")  # string, not Decimal
         self.assertIsNone(data["volume_24h"])
 
+    def test_documented_quote_volume_field(self) -> None:
+        stat = MarketStat.from_api(
+            "BTCTMN",
+            {
+                "stats": {
+                    "volume": "2.5",
+                    "24h_quoteVolume": "1500000000",
+                }
+            },
+        )
+        self.assertEqual(stat.volume_24h, Decimal("2.5"))
+        self.assertEqual(stat.quote_volume_24h, Decimal("1500000000"))
+
 
 class TestMarkets(unittest.TestCase):
     def test_get_markets_returns_symbol_mapping(self) -> None:
@@ -163,6 +176,8 @@ class TestMarketStats(unittest.TestCase):
         with self.assertRaises(WallexResponseError) as ctx:
             client.get_ticker("NOPETMN")
         self.assertIn("NOPETMN", str(ctx.exception))
+
+
 
 
 class TestOrderbookAndTrades(unittest.TestCase):
