@@ -1,18 +1,20 @@
-"""Streamlit dashboard for the Wallex AI Assistant.
-
-This is the read-only portfolio UI. It fetches public market data, optionally
-reads account balances when a Wallex API key is configured, and presents the
-results in a small, modular dashboard without allowing any trading actions.
-"""
-
 from __future__ import annotations
 
 from decimal import Decimal
 
 import streamlit as st
 
-from wallex_assistant.config import get_settings
-from wallex_assistant.i18n import format_money, format_quantity, t
+from wallex_assistant.config import Settings, get_settings
+from wallex_assistant.errors import (
+    WallexAPIError,
+    WallexAuthError,
+    WallexNetworkError,
+    WallexNotFoundError,
+    WallexRateLimitError,
+    WallexResponseError,
+)
+from wallex_assistant.http import WallexHttpClient
+from wallex_assistant.i18n import format_money, t
 from wallex_assistant.portfolio import (
     generate_analysis,
     get_asset_values,
@@ -20,6 +22,65 @@ from wallex_assistant.portfolio import (
     get_portfolio_balances,
     value_portfolio,
 )
+
+
+def build_runtime_settings(
+    base_settings: Settings,
+    api_key: str | None = None,
+) -> Settings:
+    """Return a settings snapshot using the key entered in the current UI session."""
+    cleaned = (api_key or "").strip()
+    if not cleaned:
+        return base_settings
+    return Settings(
+        wallex_api_key=cleaned,
+        wallex_base_url=base_settings.wallex_base_url,
+        log_level=base_settings.log_level,
+        language=base_settings.language,
+        request_timeout=base_settings.request_timeout,
+        max_retries=base_settings.max_retries,
+        llm_provider=base_settings.llm_provider,
+        llm_api_key=base_settings.llm_api_key,
+    )
+
+
+def validate_wallex_api_key(
+    api_key: str,
+    *,
+    base_url: str,
+    timeout: int,
+    max_retries: int,
+) -> tuple[bool, str]:
+    """Validate the key with a read-only request without displaying API error details."""
+    cleaned = (api_key or "").strip()
+    if not cleaned:
+        return False, "Enter a Wallex API key before connecting."
+
+    client = WallexHttpClient(
+        base_url=base_url,
+        api_key=cleaned,
+        timeout=timeout,
+        max_retries=max_retries,
+    )
+    try:
+        client.get("/v1/account/balances")
+        return True, "Connected successfully. Your Wallex account is ready to load."
+    except WallexAuthError:
+        return False, "Wallex rejected the key. Check that it is valid and permitted for read-only account access."
+    except WallexRateLimitError:
+        return False, "Wallex rate-limited the request. Wait a moment and try again."
+    except WallexNetworkError:
+        return False, "The app could not reach Wallex. Check your network connection and try again."
+    except WallexNotFoundError:
+        return False, "The Wallex account endpoint was not found. Check the configured base URL."
+    except WallexResponseError:
+        return False, "Wallex returned an unexpected response. Please try again later."
+    except WallexAPIError:
+        return False, "Wallex returned an API error. Check your key and try again."
+    except Exception:
+        return False, "An unexpected validation error occurred. Please try again later."
+    finally:
+        client.close()
 
 
 def _build_table_rows(balances: list, market_stats: list) -> list[dict[str, str]]:
@@ -37,16 +98,66 @@ def _build_table_rows(balances: list, market_stats: list) -> list[dict[str, str]
 
 
 def main() -> None:
-    """Render the portfolio dashboard."""
-    settings = get_settings()
-    language = settings.language if settings.language in {"en", "fa"} else "en"
+    """Render the read-only portfolio dashboard."""
+    base_settings = get_settings()
+    language = base_settings.language if base_settings.language in {"en", "fa"} else "en"
 
     st.set_page_config(page_title="Wallex AI Assistant", page_icon="📊", layout="wide")
     st.title(t("app.title", language))
     st.caption(t("app.subtitle", language))
     st.info(t("app.readonly_notice", language))
 
+    st.session_state.setdefault("wallex_api_key", "")
+    st.session_state.setdefault("wallex_status", "Not connected")
+    st.session_state.setdefault("wallex_status_message", "No key entered in this session.")
+
     with st.sidebar:
+        st.subheader("API Configuration")
+        st.caption(
+            "The key is held in Streamlit session state and is not written to a project file. "
+            "Use this app only in a trusted environment."
+        )
+        show_key = st.checkbox("Show API key", value=False, key="show_wallex_api_key")
+        st.text_input(
+            "Wallex API key",
+            type="default" if show_key else "password",
+            key="wallex_api_key_input",
+        )
+        save_col, clear_col = st.columns(2)
+        if save_col.button("Save & Connect", type="primary"):
+            entered = st.session_state.get("wallex_api_key_input", "").strip()
+            if not entered:
+                st.session_state["wallex_api_key"] = ""
+                st.session_state["wallex_status"] = "Not connected"
+                st.session_state["wallex_status_message"] = "Enter a Wallex API key before connecting."
+                st.warning(st.session_state["wallex_status_message"])
+            else:
+                st.session_state["wallex_api_key"] = entered
+                connected, message = validate_wallex_api_key(
+                    entered,
+                    base_url=base_settings.wallex_base_url,
+                    timeout=base_settings.request_timeout,
+                    max_retries=base_settings.max_retries,
+                )
+                st.session_state["wallex_status"] = "Connected" if connected else "Connection failed"
+                st.session_state["wallex_status_message"] = message
+                (st.success if connected else st.warning)(message)
+
+        if clear_col.button("Clear key"):
+            st.session_state["wallex_api_key"] = ""
+            st.session_state["wallex_api_key_input"] = ""
+            st.session_state["wallex_status"] = "Not connected"
+            st.session_state["wallex_status_message"] = "The session key was cleared."
+            st.info(st.session_state["wallex_status_message"])
+
+        status = st.session_state["wallex_status"]
+        if status == "Connected":
+            st.success(st.session_state["wallex_status_message"])
+        elif status == "Connection failed":
+            st.warning(st.session_state["wallex_status_message"])
+        else:
+            st.info(st.session_state["wallex_status_message"])
+
         st.selectbox(
             t("app.language", language),
             ["en", "fa"],
@@ -57,25 +168,28 @@ def main() -> None:
             st.rerun()
 
     language = st.session_state.get("lang_select", language)
+    runtime_settings = build_runtime_settings(
+        base_settings,
+        st.session_state.get("wallex_api_key"),
+    )
 
     try:
-        market_stats = get_market_stats(settings)
-    except Exception as exc:  # pragma: no cover - UI path
-        st.error(f"Unable to load market data: {exc}")
+        market_stats = get_market_stats(runtime_settings)
+    except Exception:
+        st.error("Unable to load public market data. Check your connection and try again.")
         market_stats = []
 
-    if settings.has_wallex_key:
+    if runtime_settings.has_wallex_key:
         try:
-            balances = get_portfolio_balances(settings)
-        except Exception as exc:  # pragma: no cover - UI path
-            st.error(f"Unable to load account balances: {exc}")
+            balances = get_portfolio_balances(runtime_settings)
+        except Exception:
+            st.error("Unable to load account balances. Check the key permissions and try again.")
             balances = []
     else:
         balances = []
-        st.warning("No WALLEX_API_KEY was configured. Showing public market data only.")
+        st.warning("No Wallex API key is configured for this session. Enter one in the sidebar to load balances.")
 
     total_value = value_portfolio(balances, market_stats)
-
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total portfolio value", format_money(total_value, language))
@@ -102,8 +216,7 @@ def main() -> None:
         if not balances:
             st.info(t("portfolio.empty", language))
         else:
-            rows = _build_table_rows(balances, market_stats)
-            st.dataframe(rows, use_container_width=True)
+            st.dataframe(_build_table_rows(balances, market_stats), use_container_width=True)
 
     with tab_analysis:
         if st.button(t("analysis.run", language), type="primary"):
@@ -116,10 +229,7 @@ def main() -> None:
             st.session_state["analysis_result"] = analysis
 
         analysis_result = st.session_state.get("analysis_result")
-        if analysis_result:
-            st.write(analysis_result)
-        else:
-            st.write(t("analysis.empty", language))
+        st.write(analysis_result or t("analysis.empty", language))
 
 
 if __name__ == "__main__":
