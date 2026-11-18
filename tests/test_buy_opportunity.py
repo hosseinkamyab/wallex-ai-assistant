@@ -18,7 +18,7 @@ from wallex_assistant.buy_opportunity import (
 from wallex_assistant.market_client import Candle
 
 
-def make_history(count=260, *, bullish=True, volume=1_000_000):
+def make_history(count=260, *, bullish=True, volume=1_000_000, upper_wick=0.3):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     price = 100.0
     rows = []
@@ -33,7 +33,7 @@ def make_history(count=260, *, bullish=True, volume=1_000_000):
         rows.append(Candle(
             open_time=start + timedelta(days=index),
             open=Decimal(str(previous)),
-            high=Decimal(str(max(previous, price) + 1.2)),
+            high=Decimal(str(max(previous, price) + upper_wick)),
             low=Decimal(str(max(0.01, min(previous, price) - 1.1))),
             close=Decimal(str(max(0.01, price))),
             volume=Decimal(str(candle_volume)),
@@ -133,6 +133,12 @@ class TestBuyOpportunity(unittest.TestCase):
         self.assertLess(stop, low)
         self.assertGreater(target_1, high)
         self.assertGreater(target_2, target_1)
+
+    def test_nearby_resistance_with_insufficient_reward_is_rejected(self):
+        # A large upper wick puts resistance just above the entry band. The
+        # scanner should keep rejecting this setup on its risk/reward filter.
+        history = {"BTCTMN": {"1d": make_history(upper_wick=1.2)}}
+        self.assertEqual(BuyOpportunityScanner().scan(["BTCTMN"], history), [])
 
     def test_stale_history_rejected_when_configured(self):
         old = make_history()
