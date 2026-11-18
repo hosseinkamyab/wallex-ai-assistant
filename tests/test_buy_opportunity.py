@@ -18,7 +18,10 @@ from wallex_assistant.buy_opportunity import (
 from wallex_assistant.market_client import Candle
 
 
-def make_history(count=260, *, bullish=True, volume=1_000_000, upper_wick=0.3):
+def make_history(
+    count=260, *, bullish=True, volume=1_000_000,
+    upper_wick=0.3, resistance_peak_multiplier=None
+):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     price = 100.0
     rows = []
@@ -38,12 +41,27 @@ def make_history(count=260, *, bullish=True, volume=1_000_000, upper_wick=0.3):
             close=Decimal(str(max(0.01, price))),
             volume=Decimal(str(candle_volume)),
         ))
+    if resistance_peak_multiplier is not None and len(rows) >= 6:
+        peak_index = len(rows) - 6
+        peak = rows[peak_index]
+        peak_high = max(
+            float(peak.high),
+            float(rows[-1].close) * resistance_peak_multiplier,
+        )
+        rows[peak_index] = Candle(
+            peak.open_time,
+            peak.open,
+            Decimal(str(peak_high)),
+            peak.low,
+            peak.close,
+            peak.volume,
+    )
     return rows
 
 
 class TestBuyOpportunity(unittest.TestCase):
     def test_bullish_history_generates_ranked_opportunity(self):
-        history = {"BTC/TMN": {"1d": make_history(bullish=True)}}
+        history = {"BTC/TMN": {"1d": make_history(bullish=True, resistance_peak_multiplier=1.08)}}
         ranked = BuyOpportunityScanner().scan(["btc-tmn"], history)
         self.assertTrue(ranked)
         self.assertGreaterEqual(ranked[0].confidence_score, 60.0)
@@ -74,7 +92,7 @@ class TestBuyOpportunity(unittest.TestCase):
             def get_ticker(self, symbol):
                 return SimpleNamespace(quote_volume_24h=Decimal("2_000_000_000"))
         ranked = BuyOpportunityScanner(FakeClient(), min_quote_volume_24h=1_000_000_000).scan(
-            ["BTCTMN"], {"BTCTMN": {"1d": make_history()}})
+            ["BTCTMN"], {"BTCTMN": {"1d": make_history(resistance_peak_multiplier=1.08)}})
         self.assertTrue(ranked)
 
     def test_quote_volume_below_threshold_is_rejected(self):
@@ -82,7 +100,7 @@ class TestBuyOpportunity(unittest.TestCase):
             def get_ticker(self, symbol):
                 return SimpleNamespace(quote_volume_24h=Decimal("500000000"))
         ranked = BuyOpportunityScanner(FakeClient(), min_quote_volume_24h=1_000_000_000).scan(
-            ["BTCTMN"], {"BTCTMN": {"1d": make_history()}})
+            ["BTCTMN"], {"BTCTMN": {"1d": make_history(resistance_peak_multiplier=1.08)}})
         self.assertEqual(ranked, [])
 
     def test_missing_quote_volume_is_rejected_when_threshold_is_configured(self):
@@ -90,7 +108,7 @@ class TestBuyOpportunity(unittest.TestCase):
             def get_ticker(self, symbol):
                 return SimpleNamespace(quote_volume_24h=None)
         ranked = BuyOpportunityScanner(FakeClient(), min_quote_volume_24h=1_000_000_000).scan(
-            ["BTCTMN"], {"BTCTMN": {"1d": make_history()}})
+            ["BTCTMN"], {"BTCTMN": {"1d": make_history(resistance_peak_multiplier=1.08)}})
         self.assertEqual(ranked, [])
 
     def test_ticker_exception_is_treated_as_unavailable(self):
@@ -98,7 +116,7 @@ class TestBuyOpportunity(unittest.TestCase):
             def get_ticker(self, symbol):
                 raise RuntimeError("simulated API failure")
         ranked = BuyOpportunityScanner(FakeClient(), min_quote_volume_24h=1_000_000_000).scan(
-            ["BTCTMN"], {"BTCTMN": {"1d": make_history()}})
+            ["BTCTMN"], {"BTCTMN": {"1d": make_history(resistance_peak_multiplier=1.08)}})
         self.assertEqual(ranked, [])
 
     def test_symbol_normalization_does_not_rewrite_quote_currency(self):
@@ -141,15 +159,15 @@ class TestBuyOpportunity(unittest.TestCase):
         self.assertEqual(BuyOpportunityScanner().scan(["BTCTMN"], history), [])
 
     def test_stale_history_rejected_when_configured(self):
-        old = make_history()
+        old = make_history(resistance_peak_multiplier=1.08)
         history = {"BTCTMN": {"1d": old}}
         ranked = BuyOpportunityScanner(max_candle_age_days=1).scan(["BTCTMN"], history)
         self.assertEqual(ranked, [])
 
     def test_multiple_symbols_have_deterministic_ranking(self):
         history = {
-            "ETHUSDT": {"1d": make_history(bullish=True)},
-            "BTCUSDT": {"1d": make_history(bullish=True)},
+            "ETHUSDT": {"1d": make_history(bullish=True, resistance_peak_multiplier=1.08)},
+            "BTCUSDT": {"1d": make_history(bullish=True, resistance_peak_multiplier=1.08)},
             "NOPETMN": {"1d": make_history(bullish=False)},
         }
         ranked = BuyOpportunityScanner().scan(["ETHUSDT", "BTCUSDT", "NOPETMN"], history)
