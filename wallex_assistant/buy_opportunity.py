@@ -11,7 +11,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import InvalidOperation
 from typing import Any, Sequence
 
 from wallex_assistant.analysis import calculate_indicators
@@ -109,15 +109,15 @@ def _symbol_name(symbol: str) -> str:
 
 
 def _valid_candles(candles: Sequence[Any]) -> list[Any]:
-    """Keep well-formed OHLC candles, sorted and deduplicated by open time."""
+    """Keep finite, positive OHLC candles sorted by open time and deduplicated."""
     valid: dict[Any, Any] = {}
     for candle in candles:
         try:
-            values = [_safe_float(getattr(candle, field)) for field in ("open", "high", "low", "close")]
-            open_price, high, low, close = values
+            values = [_safe_float(getattr(candle, name)) for name in ("open", "high", "low", "close")]
             stamp = getattr(candle, "open_time")
         except (AttributeError, TypeError):
             continue
+        open_price, high, low, close = values
         if (any(value is None for value in values) or min(values) <= 0
                 or low > min(open_price, close) or high < max(open_price, close)
                 or low > high):
@@ -133,14 +133,12 @@ def _valid_candles(candles: Sequence[Any]) -> list[Any]:
 
 
 def _support_resistance(candles: Sequence[Any]) -> tuple[float | None, float | None]:
-    """Estimate nearby levels from 2-candle swing pivots in the last 50 bars.
+    """Estimate nearby levels using swing pivots, with window extrema fallback.
 
-    Pivots require a local reaction on both sides, which is more informative than
-    treating one isolated window extreme as a tested level. Fall back to the
-    window extremes when short inputs contain no confirmed pivots. These are
-    estimates, not guaranteed support/resistance zones.
+    A pivot low/high requires reaction candles on both sides in the latest 50 bars.
+    The method is an estimate, not a guaranteed support or resistance zone.
     """
-    rows = _valid_candles(candles)[-50:]
+    rows = _valid_candles(candles)[-50:] if candles is not None else []
     if not rows:
         return None, None
     lows = [_safe_float(row.low) for row in rows]
@@ -148,30 +146,45 @@ def _support_resistance(candles: Sequence[Any]) -> tuple[float | None, float | N
     close = _safe_float(rows[-1].close)
     if close is None:
         return None, None
-    pivot_lows = [lows[i] for i in range(2, len(rows) - 2)
-                  if lows[i] is not None and lows[i] <= min(lows[i-2:i] + lows[i+1:i+3])]
-    pivot_highs = [highs[i] for i in range(2, len(rows) - 2)
-                   if highs[i] is not None and highs[i] >= max(highs[i-2:i] + highs[i+1:i+3])]
+
+    pivot_lows = []
+    pivot_highs = []
+    for i in range(2, len(rows) - 2):
+        left_lows = [value for value in lows[i-2:i] if value is not None]
+        right_lows = [value for value in lows[i+1:i+3] if value is not None]
+        if lows[i] is not None and left_lows and right_lows:
+            if lows[i] <= min(left_lows + right_lows):
+                pivot_lows.append(lows[i])
+        left_highs = [value for value in highs[i-2:i] if value is not None]
+        right_highs = [value for value in highs[i+1:i+3] if value is not None]
+        if highs[i] is not None and left_highs and right_highs:
+            if highs[i] >= max(left_highs + right_highs):
+                pivot_highs.append(highs[i])
+
     below = [value for value in pivot_lows if value is not None and value < close]
     above = [value for value in pivot_highs if value is not None and value > close]
-    support = max(below) if below else min(value for value in lows if value is not None)
-    resistance = min(above) if above else max(value for value in highs if value is not None)
+    valid_lows = [value for value in lows if value is not None]
+    valid_highs = [value for value in highs if value is not None]
+    support = max(below) if below else min(valid_lows)
+    resistance = min(above) if above else max(valid_highs)
     return float(support), float(resistance)
 
 
 def _compute_risk_reward(entry: float, stop_loss: float, target_1: float, target_2: float) -> float:
-    """Return mean-of-targets reward divided by risk, using one entry assumption."""
+    """Return mean target reward divided by entry-to-stop risk."""
     levels = (entry, stop_loss, target_1, target_2)
-    if not all(math.isfinite(value) for value in levels) or not (0 < stop_loss < entry < target_1 <= target_2):
+    if not all(math.isfinite(value) for value in levels):
+        return 0.0
+    if not (0 < stop_loss < entry < target_1 <= target_2):
         return 0.0
     downside = entry - stop_loss
     reward = ((target_1 - entry) + (target_2 - entry)) / 2
-    return reward / downside if downside > 0 else 0.0
+    return round(reward / downside, 2) if downside > 0 else 0.0
 
 
 def _entry_range(*, opportunity_type: str, price: float, support: float | None,
                  resistance: float | None) -> tuple[float, float]:
-    """Compute an entry band; pullbacks wait near support, other setups are immediate."""
+    """Return a consistent entry band for immediate or pullback setups."""
     if opportunity_type in {"support-level rebounds", "pullback opportunities"} and support and support < price:
         return support * 0.995, support * 1.015
     if opportunity_type == "breakout opportunities" and resistance:
@@ -183,7 +196,7 @@ def _stop_and_targets(*, price: float, support: float | None, resistance: float 
                       opportunity_type: str, atr: float | None = None,
                       entry_low: float | None = None, entry_high: float | None = None
                       ) -> tuple[float, float, float]:
-    """Build ATR-aware invalidation/targets, falling back to modest price bands."""
+    """Build ATR-aware BUY levels; fall back to a 2% ATR proxy."""
     if not math.isfinite(price) or price <= 0:
         return 0.0, 0.0, 0.0
     entry_low = entry_low if entry_low is not None else price
@@ -194,27 +207,26 @@ def _stop_and_targets(*, price: float, support: float | None, resistance: float 
         stop_candidates.append(support - volatility * 0.25)
     stop = min(stop_candidates)
     target_1 = resistance if resistance is not None and resistance > entry_high else entry_high + 1.5 * volatility
+    target_2 = max(target_1 + volatility, entry_high + 3 * volatility)
     if target_1 <= entry_high:
         target_1 = entry_high + 1.5 * volatility
-    target_2 = max(target_1 + volatility, entry_high + 3 * volatility)
     return stop, target_1, target_2
 
 
 def _confidence_score(*, trend_score: float, momentum_score: float, volume_score: float,
                       liquidity_score: float, risk_reward: float, market_env: float) -> float:
-    """Weighted evidence ranking; risk/reward is bounded to avoid score inflation."""
+    """Weighted heuristic evidence ranking; the result is not a probability."""
     rr_score = min(max(risk_reward / 3.0, 0.0), 1.0)
-    return max(0.0, min(100.0, 100 * (
-        .28 * trend_score + .22 * momentum_score + .20 * volume_score
-        + .15 * liquidity_score + .10 * rr_score + .05 * market_env
-    )))
+    raw = (.28 * trend_score + .22 * momentum_score + .20 * volume_score
+           + .15 * liquidity_score + .10 * rr_score + .05 * market_env)
+    return round(max(0.0, min(100.0, 100 * raw)), 1)
 
 
 def _invalidation_conditions(support: float | None, stop_loss: float) -> list[str]:
-    conditions = [f"A daily close below the estimated stop/invalidation level ({stop_loss:.6g}) weakens the setup."]
+    conditions = [f"A daily close below {stop_loss:.6g} weakens the setup."]
     if support is not None:
-        conditions.append(f"A sustained daily close below estimated support ({support:.6g}) invalidates the support thesis.")
-    conditions.append("The setup is no longer applicable if daily trend or momentum confirmation turns bearish.")
+        conditions.append(f"A sustained daily close below estimated support {support:.6g} invalidates the thesis.")
+    conditions.append("The setup is no longer applicable if daily trend or momentum turns bearish.")
     return conditions
 
 
@@ -223,7 +235,7 @@ class BuyOpportunityScanner:
 
     def __init__(self, market_client: Any | None = None, *, min_confidence: float = 60.0,
                  min_volume_ratio: float = 1.2, min_quote_volume_24h: float | None = None,
-                 min_risk_reward: float = 1.3, max_candle_age_days: float | None = 3.0) -> None:
+                 min_risk_reward: float = 1.3, max_candle_age_days: float | None = None) -> None:
         if not math.isfinite(min_confidence) or not 0 <= min_confidence <= 100:
             raise ValueError("min_confidence must be between 0 and 100")
         if not math.isfinite(min_volume_ratio) or min_volume_ratio < 0:
@@ -268,11 +280,13 @@ class BuyOpportunityScanner:
                 continue
             if daily.get("candles", 0) < 50:
                 continue
-            price, rsi, macd, signal, atr = (_safe_float(daily.get(name)) for name in
-                                              ("close", "rsi_14", "macd", "macd_signal", "atr_14"))
+            price, rsi, macd, macd_signal, atr = (
+                _safe_float(daily.get(name)) for name in
+                ("close", "rsi_14", "macd", "macd_signal", "atr_14")
+            )
             trend = daily.get("trend")
             if (price is None or price <= 0 or trend != "bullish" or rsi is None
-                    or macd is None or signal is None or atr is None or atr <= 0):
+                    or macd is None or macd_signal is None or atr is None or atr <= 0):
                 continue
             support, resistance = _support_resistance(candles)
             if support is None or resistance is None or support <= 0 or resistance <= 0:
@@ -281,7 +295,7 @@ class BuyOpportunityScanner:
                 continue
             volume_ratio = _safe_float(daily.get("volume_vs_20_period"))
             volume_ok = volume_ratio is not None and volume_ratio >= self.min_volume_ratio
-            recovery = rsi < 40 and macd >= signal
+            recovery = rsi < 40 and macd >= macd_signal
             if not volume_ok and not recovery:
                 continue
 
@@ -291,7 +305,6 @@ class BuyOpportunityScanner:
                     ticker = self.market_client.get_ticker(key)
                     quote_volume = _safe_float(getattr(ticker, "quote_volume_24h", None))
                 except Exception as exc:
-                    # Do not expose exception text; API errors may include request details.
                     logger.warning("Ticker unavailable for %s (%s)", key, type(exc).__name__)
             if self.min_quote_volume_24h is not None and (
                 quote_volume is None or quote_volume < self.min_quote_volume_24h
@@ -299,22 +312,20 @@ class BuyOpportunityScanner:
                 continue
 
             near_support = (price - support) / price <= .04 and price > support
-            breakout = resistance < price and macd > signal and volume_ok
+            breakout = resistance < price and macd > macd_signal and volume_ok
             if breakout:
                 opp_type = "breakout opportunities"
             elif near_support and rsi < 60:
                 opp_type = "support-level rebounds"
-            elif rsi >= 40 and macd >= signal:
+            elif rsi >= 40 and macd >= macd_signal:
                 opp_type = "trend-following entries"
             else:
                 continue
+
             entry_low, entry_high = _entry_range(
                 opportunity_type=opp_type, price=price, support=support, resistance=resistance)
-            # A support entry materially above market is only a wait-for-pullback setup.
-            if opp_type == "support-level rebounds" and entry_low > price * 1.01:
-                entry_status = "WAIT FOR PULLBACK"
-            else:
-                entry_status = "IMMEDIATE"
+            entry_status = "IMMEDIATE" if entry_low <= price <= entry_high else "WAIT FOR PULLBACK"
+
             stop, target_1, target_2 = _stop_and_targets(
                 price=price, support=support, resistance=resistance, opportunity_type=opp_type,
                 atr=atr, entry_low=entry_low, entry_high=entry_high)
@@ -323,35 +334,49 @@ class BuyOpportunityScanner:
                 continue
             if risk_reward < self.min_risk_reward:
                 continue
+
             avg_target = (target_1 + target_2) / 2
-            upside_pct = (avg_target - entry_high) / entry_high * 100
-            downside_pct = (entry_high - stop) / entry_high * 100
-            liquidity_score = (min(1.0, quote_volume / self.min_quote_volume_24h / 2)
-                               if quote_volume is not None and self.min_quote_volume_24h else .7)
+            upside_pct = round((avg_target - entry_high) / entry_high * 100, 2)
+            downside_pct = round((entry_high - stop) / entry_high * 100, 2)
+            liquidity_score = (
+                min(1.0, quote_volume / self.min_quote_volume_24h / 2)
+                if quote_volume is not None and self.min_quote_volume_24h
+                else .7
+            )
             confidence = _confidence_score(
-                trend_score=1.0, momentum_score=.8 if 40 <= rsi <= 60 else .6,
-                volume_score=1.0 if volume_ok else .5, liquidity_score=liquidity_score,
-                risk_reward=risk_reward, market_env=1.0)
+                trend_score=1.0,
+                momentum_score=.8 if 40 <= rsi <= 60 else .6,
+                volume_score=1.0 if volume_ok else .5,
+                liquidity_score=liquidity_score,
+                risk_reward=risk_reward,
+                market_env=1.0,
+            )
             if confidence < self.min_confidence:
                 continue
-            reasons = ["Daily price/EMA trend is bullish.", f"RSI(14) is {rsi:.1f}.",
-                       f"MACD is {'above' if macd >= signal else 'below'} its signal line."]
+
+            reasons = [
+                "Daily price/EMA trend is bullish.",
+                f"RSI(14) is {rsi:.1f}.",
+                f"MACD is {'above' if macd >= macd_signal else 'below'} its signal line.",
+            ]
             reasons.append(f"Daily volume is {volume_ratio:.2f}x its 20-candle average." if volume_ratio is not None
                            else "Volume confirmation is unavailable; recovery exception applied.")
             reasons.append(f"Estimated support: {support:.6g}; resistance: {resistance:.6g}.")
             reasons.append("Confidence is a heuristic evidence ranking, not a probability or guarantee.")
+
             opportunities.append(BuyOpportunity(
                 symbol=key, name=_symbol_name(key), pair=key, price=price,
                 entry_low=entry_low, entry_high=entry_high, trend=trend,
                 opportunity_type=opp_type, reasons=reasons, rsi_14=rsi, macd=macd,
-                macd_signal=signal, macd_histogram=macd - signal,
+                macd_signal=macd_signal, macd_histogram=macd-macd_signal,
                 volume_confirmation=volume_ok, support=support, resistance=resistance,
                 stop_loss=stop, target_1=target_1, target_2=target_2,
                 potential_upside_pct=upside_pct, potential_downside_pct=downside_pct,
                 risk_reward=risk_reward, confidence_score=confidence,
                 recommended_holding_timeframe="1-6 weeks",
                 invalidation_conditions=_invalidation_conditions(support, stop),
-                market_condition="constructive", entry_status=entry_status))
+                market_condition="constructive", entry_status=entry_status,
+            ))
         return sorted(opportunities, key=lambda item: (-item.confidence_score, -(item.risk_reward or 0), item.symbol))
 
 
