@@ -127,3 +127,96 @@ def generate_analysis(
     from .llm_client import analyze_portfolio
 
     return analyze_portfolio(balances, market_stats, language=language, model=model)
+
+
+
+def get_buy_opportunities(
+    settings: Settings | None = None,
+    *,
+    min_confidence: float = 60.0,
+    max_markets: int = 20,
+) -> list:
+    """Fetch and rank BUY setups for liquid TMN markets."""
+    opportunities, _ = get_buy_opportunities_with_context(
+        settings=settings,
+        min_confidence=min_confidence,
+        max_markets=max_markets,
+    )
+    return opportunities
+
+
+def get_buy_opportunities_with_context(
+    settings: Settings | None = None,
+    *,
+    min_confidence: float = 60.0,
+    max_markets: int = 20,
+) -> tuple[list, Any]:
+    """Return BUY opportunities together with overall market context."""
+    from datetime import datetime, timezone
+
+    from .analysis import TIMEFRAMES, analyze_market
+    from .buy_opportunity import BuyOpportunityScanner
+
+    settings = settings or get_settings()
+    client = MarketClient.from_settings(settings)
+
+    try:
+        market_stats = client.get_market_stats()
+
+        eligible = [
+            stat for stat in market_stats
+            if stat.symbol.upper().endswith("TMN")
+            and stat.quote_volume_24h is not None
+        ]
+
+        eligible.sort(
+            key=lambda stat: Decimal(str(stat.quote_volume_24h)),
+            reverse=True,
+        )
+
+        selected = eligible[:max_markets]
+        symbols = [stat.symbol for stat in selected]
+
+        end = datetime.now(timezone.utc)
+        end_timestamp = int(end.timestamp())
+        start_timestamp = end_timestamp - 100 * 86400
+
+        history_by_symbol = {}
+
+        for symbol in symbols:
+            try:
+                candles = client.get_history(
+                    symbol,
+                    TIMEFRAMES["1d"],
+                    start_timestamp,
+                    end_timestamp,
+                )
+                history_by_symbol[symbol] = {"1d": candles}
+            except Exception:
+                continue
+
+        market_context, _ = analyze_market(
+            history_by_symbol,
+            btc_symbol="BTCTMN",
+        )
+
+        stats_by_symbol = {
+            stat.symbol.upper(): stat for stat in selected
+        }
+
+        class MarketStatsLookup:
+            def get_ticker(self, symbol):
+                return stats_by_symbol[symbol.upper()]
+
+        scanner = BuyOpportunityScanner(
+            market_client=MarketStatsLookup(),
+            min_confidence=min_confidence,
+            max_candle_age_days=3,
+        )
+
+        opportunities = scanner.scan(symbols, history_by_symbol)
+
+        return opportunities, market_context
+
+    finally:
+        client.close()

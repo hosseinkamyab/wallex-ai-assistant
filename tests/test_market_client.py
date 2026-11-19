@@ -127,7 +127,21 @@ class TestMarketStatParsing(unittest.TestCase):
         self.assertEqual(stat.volume_24h, Decimal("2.5"))
         self.assertEqual(stat.quote_volume_24h, Decimal("1500000000"))
 
+    def test_wallex_top_level_quote_volume_field(self) -> None:
+        stat = MarketStat.from_api(
+            "BTCTMN",
+            {
+                "symbol": "BTCTMN",
+                "volume_24h": 9.17874266,
+                "quote_volume_24h": 159146553815.8261,
+            },
+        )
 
+        self.assertEqual(stat.volume_24h, Decimal("9.17874266"))
+        self.assertEqual(
+            stat.quote_volume_24h,
+            Decimal("159146553815.8261"),
+        )
 class TestMarkets(unittest.TestCase):
     def test_get_markets_returns_symbol_mapping(self) -> None:
         client = _client_with({"symbols": {"BTCTMN": {"base": "BTC"}}})

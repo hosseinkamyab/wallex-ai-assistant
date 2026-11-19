@@ -151,7 +151,14 @@ def analyze_market(candles_by_symbol: Mapping[str, Mapping[str, Sequence[Candle]
     summaries: dict[str, dict[str, dict[str, Any]]] = {}
     for symbol, frames in candles_by_symbol.items():
         summaries[symbol] = {tf: calculate_indicators(frames.get(tf, ())) for tf in TIMEFRAMES}
-    btc_key = next((key for key in summaries if key.upper().replace("/", "").replace("-", "") == btc_symbol.upper().replace("/", "").replace("-", "")), None)
+    normalize_symbol = lambda value: value.upper().replace("/", "").replace("-", "").replace(" ", "")
+    btc_key = next(
+    (
+        key for key in summaries
+        if normalize_symbol(key) == normalize_symbol(btc_symbol)
+    ),
+    None,
+    )
     btc_daily = summaries.get(btc_key, {}).get("1d", {}) if btc_key else {}
     btc_direction = btc_daily.get("trend", "unknown") if btc_daily.get("candles", 0) >= minimum_candles else "unknown"
     eligible = [frames["1d"] for frames in summaries.values() if frames["1d"].get("candles", 0) >= minimum_candles and frames["1d"].get("trend") in ("bullish", "bearish")]
@@ -159,7 +166,19 @@ def analyze_market(candles_by_symbol: Mapping[str, Mapping[str, Sequence[Candle]
     daily_atrs = [frames["1d"].get("atr_percent") for frames in summaries.values() if frames["1d"].get("atr_percent") is not None]
     volatility = "high" if daily_atrs and float(np.median(daily_atrs)) >= 5 else "normal" if daily_atrs else "unknown"
     risk = "elevated" if volatility == "high" or btc_direction == "bearish" or (breadth is not None and breadth < .3) else "constructive" if btc_direction == "bullish" and breadth is not None and breadth > .6 else "mixed" if breadth is not None else "unknown"
-    context = MarketContext(datetime.now(timezone.utc).isoformat(), btc_direction, breadth, volatility, risk, len(summaries))
+    symbols_analyzed = sum(
+        frames["1d"].get("candles", 0) >= minimum_candles
+        for frames in summaries.values()
+    )
+
+    context = MarketContext(
+        datetime.now(timezone.utc).isoformat(),
+        btc_direction,
+        breadth,
+        volatility,
+        risk,
+        symbols_analyzed,
+    )
     results = [_score_symbol(symbol, frames, context, weights, minimum_candles) for symbol, frames in summaries.items()]
     return context, results
 

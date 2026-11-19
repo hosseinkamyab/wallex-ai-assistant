@@ -92,7 +92,15 @@ class MarketStat:
             low_24h=_optional_decimal(_pick(stats, "lowPrice", "low_price", "low_24h", "low")),
             volume_24h=_optional_decimal(_pick(stats, "volume", "base_volume", "volume_24h")),
             quote_volume_24h=_optional_decimal(
-                _pick(stats, "24h_quoteVolume", "quoteVolume", "quote_volume", "volume_tmn")),
+                _pick(
+                    stats,
+                    "quote_volume_24h",
+                    "24h_quoteVolume",
+                    "quoteVolume",
+                    "quote_volume",
+                    "volume_tmn",
+                )
+            ),
             best_bid=_optional_decimal(_pick(raw, "best_bid", "bestBid", "bid")),
             best_ask=_optional_decimal(_pick(raw, "best_ask", "bestAsk", "ask")),
         )

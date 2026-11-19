@@ -41,6 +41,48 @@ class TestAnalysis(unittest.TestCase):
         with self.assertRaises(ValueError):
             ScoringWeights(trend=0, momentum=0, volume=0, volatility=0, timeframe_agreement=0, risk_reward=0, market=0)
 
+    def test_bearish_market_breadth_is_low(self):
+        market, _ = analyze_market({
+            "BTC TMN": {"1d": candles(260, -1)},
+            "ETH TMN": {"1d": candles(260, -1)},
+            "XRP TMN": {"1d": candles(260, -1)},
+            "SOL TMN": {"1d": candles(260, 1)},
+        })
+
+        self.assertAlmostEqual(market.breadth, 0.25)
+        self.assertEqual(market.btc_direction, "bearish")
+        self.assertEqual(market.risk_condition, "elevated")
+
+    def test_bullish_market_breadth_is_constructive(self):
+        market, _ = analyze_market({
+            "BTC TMN": {"1d": candles(260, 1)},
+            "ETH TMN": {"1d": candles(260, 1)},
+            "XRP TMN": {"1d": candles(260, 1)},
+            "SOL TMN": {"1d": candles(260, -1)},
+        })
+
+        self.assertAlmostEqual(market.breadth, 0.75)
+        self.assertEqual(market.btc_direction, "bullish")
+        self.assertEqual(market.risk_condition, "constructive")
+
+    def test_bitcoin_symbol_without_space_is_recognized(self):
+        market, _ = analyze_market({
+            "BTCTMN": {"1d": candles(260, -1)},
+            "ETHTMN": {"1d": candles(260, -1)},
+            "XRPTMN": {"1d": candles(260, 1)},
+        })
+
+        self.assertEqual(market.btc_direction, "bearish")
+
+    def test_symbols_analyzed_excludes_insufficient_daily_history(self):
+        market, _ = analyze_market({
+            "BTCTMN": {"1d": candles(260, -1)},
+            "ETHTMN": {"1d": candles(20, 1)},
+            "SOLTMN": {"1d": []},
+        })
+
+        self.assertEqual(market.symbols_analyzed, 1)
+
     def test_missing_volume_remains_missing(self):
         data = calculate_indicators([Candle(row.open_time, row.open, row.high, row.low, row.close, None) for row in candles()])
         self.assertIsNone(data["volume"])

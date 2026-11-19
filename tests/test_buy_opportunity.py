@@ -152,6 +152,16 @@ class TestBuyOpportunity(unittest.TestCase):
         self.assertGreater(target_1, high)
         self.assertGreater(target_2, target_1)
 
+    def test_support_rebound_entry_does_not_exceed_resistance(self):
+        low, high = _entry_range(
+            opportunity_type="support-level rebounds",
+            price=100,
+            support=98,
+            resistance=99,
+        )
+        self.assertLessEqual(high, 99)
+        self.assertLessEqual(low, high)
+
     def test_nearby_resistance_with_insufficient_reward_is_rejected(self):
         # A large upper wick puts resistance just above the entry band. The
         # scanner should keep rejecting this setup on its risk/reward filter.

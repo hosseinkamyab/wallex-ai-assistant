@@ -184,11 +184,19 @@ def _compute_risk_reward(entry: float, stop_loss: float, target_1: float, target
 
 def _entry_range(*, opportunity_type: str, price: float, support: float | None,
                  resistance: float | None) -> tuple[float, float]:
-    """Return a consistent entry band for immediate or pullback setups."""
+    """Return an entry band that respects nearby support and resistance."""
     if opportunity_type in {"support-level rebounds", "pullback opportunities"} and support and support < price:
-        return support * 0.995, support * 1.015
+        entry_low = support * 0.995
+        entry_high = support * 1.015
+
+        if resistance is not None and resistance > 0:
+            entry_high = min(entry_high, resistance * 0.995)
+
+        return entry_low, max(entry_low, entry_high)
+
     if opportunity_type == "breakout opportunities" and resistance:
         return max(price * 0.995, resistance * 0.995), max(price * 1.005, resistance * 1.005)
+
     return price * 0.995, price * 1.005
 
 

@@ -21,6 +21,7 @@ from wallex_assistant.portfolio import (
     get_market_stats,
     get_portfolio_balances,
     value_portfolio,
+    get_buy_opportunities_with_context,
 )
 
 
@@ -198,8 +199,13 @@ def main() -> None:
     with col3:
         st.metric("Market symbols", str(len(market_stats)))
 
-    tab_overview, tab_balances, tab_analysis = st.tabs(
-        [t("tab.overview", language), t("tab.balances", language), t("tab.analysis", language)]
+    tab_overview, tab_balances, tab_analysis, tab_buy = st.tabs(
+        [
+            t("tab.overview", language),
+            t("tab.balances", language),
+            t("tab.analysis", language),
+            "BUY Opportunities",
+        ]
     )
 
     with tab_overview:
@@ -230,6 +236,135 @@ def main() -> None:
 
         analysis_result = st.session_state.get("analysis_result")
         st.write(analysis_result or t("analysis.empty", language))
+
+    with tab_buy:
+        st.write(
+            "Scan the highest-volume TMN markets for potential bullish setups "
+            "using daily technical indicators."
+        )
+
+        st.warning(
+            "This is a read-only, rule-based scanner. Its confidence score "
+            "is a heuristic ranking, not a probability of profit. "
+            "It does not execute trades."
+        )
+
+        if st.button("Scan for BUY Opportunities", type="primary"):
+            try:
+                with st.spinner("Scanning Wallex markets. This may take a while..."):
+                    opportunities, market_context = get_buy_opportunities_with_context(
+                        settings=runtime_settings,
+                        min_confidence=60,
+                        max_markets=20,
+                    )
+
+                st.session_state["buy_opportunities"] = opportunities
+                st.session_state["buy_market_context"] = market_context
+                st.session_state["buy_scan_error"] = None
+
+            except Exception as exc:
+                st.session_state["buy_scan_error"] = (
+                    f"Scanning failed: {type(exc).__name__}: {exc}"
+                )
+
+        scan_error = st.session_state.get("buy_scan_error")
+        if scan_error:
+            st.error(scan_error)
+
+        market_context = st.session_state.get("buy_market_context")
+
+        if market_context is not None:
+            st.subheader("Overall Market Conditions")
+
+            col1, col2, col3, col4, col5 = st.columns(5)
+
+            breadth = (
+                f"{market_context.breadth:.1%}"
+                if market_context.breadth is not None
+                else "N/A"
+            )
+
+            col1.metric(
+                "Overall Risk",
+                market_context.risk_condition.replace("_", " ").title(),
+            )
+            col2.metric(
+                "Bitcoin Direction",
+                market_context.btc_direction.title(),
+            )
+            col3.metric("Bullish Breadth", breadth)
+            col4.metric(
+                "Volatility",
+                market_context.volatility.title(),
+            )
+            col5.metric(
+                "Markets Analyzed",
+                market_context.symbols_analyzed,
+            )
+
+            st.caption(
+                "Market context is calculated from the 20 most liquid TMN "
+                "markets with sufficient daily history. Bullish breadth "
+                "excludes neutral-trend markets."
+            )
+
+        opportunities = st.session_state.get("buy_opportunities")
+
+        if opportunities is not None:
+            if not opportunities:
+                st.info("No qualifying BUY opportunities were found.")
+            else:
+                st.success(
+                    f"Found {len(opportunities)} potential BUY opportunities."
+                )
+
+                rows = [
+                    {
+                        "Symbol": item.symbol,
+                        "Price (TMN)": f"{item.price:,.2f}",
+                        "Entry range (TMN)": (
+                            f"{item.entry_low:,.2f} – {item.entry_high:,.2f}"
+                        ),
+                        "Stop loss": (
+                            f"{item.stop_loss:,.2f}"
+                            if item.stop_loss is not None else "N/A"
+                        ),
+                        "Target 1": (
+                            f"{item.target_1:,.2f}"
+                            if item.target_1 is not None else "N/A"
+                        ),
+                        "Target 2": (
+                            f"{item.target_2:,.2f}"
+                            if item.target_2 is not None else "N/A"
+                        ),
+                        "Risk/Reward": (
+                            f"{item.risk_reward:.2f}"
+                            if item.risk_reward is not None else "N/A"
+                        ),
+                        "Confidence": f"{item.confidence_score:.1f}/100",
+                        "Setup": item.opportunity_type,
+                    }
+                    for item in opportunities
+                ]
+
+                st.dataframe(rows, use_container_width=True)
+
+                for item in opportunities:
+                    with st.expander(
+                        f"{item.symbol} — {item.confidence_score:.1f}/100"
+                    ):
+                        st.write("**Reasons:**")
+                        for reason in item.reasons:
+                            st.write(f"- {reason}")
+
+                        st.write("**Invalidation conditions:**")
+                        for condition in item.invalidation_conditions:
+                            st.write(f"- {condition}")
+
+                        st.write(
+                            f"Recommended holding timeframe: "
+                            f"{item.recommended_holding_timeframe}"
+                        )
 
 
 if __name__ == "__main__":
