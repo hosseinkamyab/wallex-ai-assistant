@@ -15,7 +15,9 @@ from wallex_assistant.market_scan_insights import (
 
 def dated_history(count=260, bullish=False):
     start = datetime.now(timezone.utc) - timedelta(days=count)
-    price = 100.0
+    # Keep every bearish candle positive so the scanner evaluates the trend
+    # instead of discarding invalid candles after the synthetic price crosses 0.
+    price = 1000.0 if not bullish else 100.0
     rows = []
     for i in range(count):
         price += 0.1 if bullish else -0.45
