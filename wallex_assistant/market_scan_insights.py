@@ -12,9 +12,9 @@ from typing import Any, Mapping, Sequence
 
 from wallex_assistant.analysis import calculate_indicators
 from wallex_assistant.buy_opportunity import (
-    _entry_range,
-    _compute_risk_reward,
     _confidence_score,
+    _compute_risk_reward,
+    _entry_range,
     _stop_and_targets,
     _support_resistance,
     _valid_candles,
@@ -25,8 +25,10 @@ def diagnose_buy_rejections(
     symbols: Sequence[str],
     history_by_symbol: Mapping[str, Mapping[str, Sequence[Any]]],
     *,
+    market_client: Any | None = None,
     min_confidence: float = 60.0,
     min_volume_ratio: float = 1.2,
+    min_quote_volume_24h: float | None = None,
     min_risk_reward: float = 1.3,
     max_candle_age_days: float | None = 3,
 ) -> dict[str, Any]:
@@ -53,8 +55,7 @@ def diagnose_buy_rejections(
             reject("insufficient_history")
             continue
 
-        raw_candles = history.get("1d", [])
-        candles = _valid_candles(raw_candles)
+        candles = _valid_candles(history.get("1d", []))
         if len(candles) < 50:
             reject("insufficient_history")
             continue
@@ -107,6 +108,19 @@ def diagnose_buy_rejections(
             reject("volume_not_confirmed")
             continue
 
+        quote_volume = None
+        if market_client is not None:
+            try:
+                ticker = market_client.get_ticker(symbol)
+                quote_volume = _diagnostic_float(getattr(ticker, "quote_volume_24h", None))
+            except Exception:
+                quote_volume = None
+        if min_quote_volume_24h is not None and (
+            quote_volume is None or quote_volume < min_quote_volume_24h
+        ):
+            reject("liquidity_below_threshold")
+            continue
+
         near_support = (price - support) / price <= 0.04 and price > support
         breakout = resistance < price and macd > macd_signal and volume_ok
         if breakout:
@@ -143,7 +157,11 @@ def diagnose_buy_rejections(
             reject("risk_reward_too_low")
             continue
 
-        liquidity_score = 0.7
+        liquidity_score = (
+            min(1.0, quote_volume / min_quote_volume_24h / 2)
+            if quote_volume is not None and min_quote_volume_24h
+            else 0.7
+        )
         confidence = _confidence_score(
             trend_score=1.0,
             momentum_score=0.8 if 40 <= rsi <= 60 else 0.6,
@@ -169,12 +187,8 @@ def _diagnostic_float(value: Any) -> float | None:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    return number if _is_finite(number) else None
-
-
-def _is_finite(value: float) -> bool:
     import math
-    return math.isfinite(value)
+    return number if math.isfinite(number) else None
 
 
 REASON_LABELS = {
@@ -185,6 +199,7 @@ REASON_LABELS = {
     "levels_unavailable": "Valid support and resistance levels could not be established",
     "entry_rsi_not_confirmed": "The RSI entry range is not satisfied",
     "volume_not_confirmed": "Bullish volume or recovery confirmation is weak",
+    "liquidity_below_threshold": "24-hour quote liquidity is below the configured threshold",
     "entry_condition_not_satisfied": "A breakout, support rebound, or trend-following entry condition is not satisfied",
     "risk_reward_levels_invalid": "A valid stop-loss and target structure could not be established",
     "risk_reward_too_low": "Risk/reward is below the scanner threshold",
